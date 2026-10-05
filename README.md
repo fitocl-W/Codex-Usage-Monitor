@@ -2,6 +2,12 @@
 
 在 Codex 客户端中显示上下文占用和 Token 用量，支持五套主题。
 
+## 效果预览
+
+![五套主题效果预览](assets/github-preview.png)
+
+
+
 ## 1. 准备环境
 
 先安装官方 Codex 客户端，并确保电脑已安装 Node.js 22 或更高版本。
