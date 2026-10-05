@@ -1,0 +1,542 @@
+﻿Set-StrictMode -Version 2.0
+$CodexUsageRoot = Split-Path -Parent $PSScriptRoot
+$CodexUsageStateRoot = Join-Path $env:LOCALAPPDATA 'CodexUsageMonitor'
+$CodexUsageStatePath = Join-Path $CodexUsageStateRoot 'state.json'
+$CodexUsageVersion = (Get-Content -LiteralPath (Join-Path $CodexUsageRoot 'VERSION') -Raw).Trim()
+$CodexUsageUtf8 = [Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $CodexUsageUtf8 } catch {}
+$global:OutputEncoding = $CodexUsageUtf8
+function Invoke-CodexUsageProcessWithTimeout {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [string]$ArgumentLine = '',
+    [ValidateRange(100, 120000)]
+    [int]$TimeoutMs = 10000
+  )
+
+  $startInfo = New-Object Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $FilePath
+  $startInfo.Arguments = $ArgumentLine
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = $startInfo
+  $stdoutTask = $null
+  $stderrTask = $null
+  try {
+    if (-not $process.Start()) { throw "无法启动进程：$FilePath" }
+    $processId = $process.Id
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $timedOut = -not $process.WaitForExit($TimeoutMs)
+    if ($timedOut) {
+      try {
+        if (-not $process.HasExited) { $process.Kill() }
+      } catch {}
+      if (-not $process.WaitForExit(5000)) { throw "超时进程无法终止：PID $processId" }
+    } else {
+      $process.WaitForExit()
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    return [pscustomobject]@{
+      ProcessId = $processId
+      ExitCode = if ($timedOut) { 124 } else { $process.ExitCode }
+      TimedOut = $timedOut
+      StandardOutput = $stdout
+      StandardError = $stderr
+    }
+  } finally {
+    if ($process) { $process.Dispose() }
+  }
+}
+
+
+function Resolve-CodexUsageNodePath {
+  $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  $candidates = @(
+    (Join-Path $CodexUsageRoot 'runtime\node.exe'),
+    $env:CODEX_USAGE_NODE_PATH,
+    (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'),
+    (Join-Path $env:ProgramFiles 'nodejs\node.exe'),
+    $(if ($nodeCommand) { $nodeCommand.Source } else { $null })
+  ) | Where-Object { $_ } | Select-Object -Unique
+  $outdated = @()
+  foreach ($candidate in $candidates) {
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+    $version = (& $candidate -p 'process.versions.node' 2>$null)
+    $major = 0
+    if ($LASTEXITCODE -eq 0 -and [int]::TryParse(([string]$version).Split('.')[0], [ref]$major) -and $major -ge 22) {
+      return [IO.Path]::GetFullPath($candidate)
+    }
+    $outdated += "${candidate} ($version)"
+  }
+  if ($outdated.Count) { throw "需要 Node.js 22+。已找到但版本不兼容：$($outdated -join ', ')" }
+  throw 'Node.js 未找到。请安装 Node.js 22+，或设置 CODEX_USAGE_NODE_PATH。'
+}
+
+
+function Get-CodexUsageWindowsPowerShellPath {
+  $windowsRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+  if (-not $windowsRoot) { return $null }
+  $windowsPowerShell = Join-Path $windowsRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  if (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf) {
+    return [IO.Path]::GetFullPath($windowsPowerShell)
+  }
+  return $null
+}
+
+
+function Get-CodexUsageAppPackageViaWindowsPowerShell {
+  [CmdletBinding()]
+  param([string]$WindowsPowerShellPath)
+
+  $windowsPowerShell = if ($WindowsPowerShellPath) {
+    if (Test-Path -LiteralPath $WindowsPowerShellPath -PathType Leaf) {
+      [IO.Path]::GetFullPath($WindowsPowerShellPath)
+    } else {
+      $null
+    }
+  } else {
+    Get-CodexUsageWindowsPowerShellPath
+  }
+  if (-not $windowsPowerShell) { return $null }
+  $query = @'
+$package = Get-AppxPackage -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.InstallLocation -and
+    ((@($env:CODEX_USAGE_APP_PACKAGE_NAME, 'OpenAI.Codex') -contains $_.Name) -or ($_.Name -match '(?i)OpenAI|Codex|ChatGPT')) -and
+    (Test-Path -LiteralPath (Join-Path $_.InstallLocation 'app\ChatGPT.exe') -PathType Leaf)
+  } |
+  Sort-Object Version -Descending |
+  Select-Object -First 1
+if ($package) {
+  $package | Select-Object Name,InstallLocation,PackageFamilyName,Version | ConvertTo-Json -Compress
+}
+'@
+  try {
+    $json = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $query 2>$null) -join [Environment]::NewLine
+    if (-not [string]::IsNullOrWhiteSpace($json)) { return ($json | ConvertFrom-Json) }
+  } catch {}
+  return $null
+}
+
+
+function Get-CodexUsageAppPackage {
+  $appxCommand = Get-Command Get-AppxPackage -ErrorAction SilentlyContinue
+  if ($appxCommand) {
+    $packageNames = @($env:CODEX_USAGE_APP_PACKAGE_NAME, 'OpenAI.Codex') | Where-Object { $_ } | Select-Object -Unique
+    foreach ($name in $packageNames) {
+      $package = Get-AppxPackage -Name $name -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+      if ($package) { return $package }
+    }
+    try {
+      $package = Get-AppxPackage -ErrorAction Stop | Where-Object {
+        $_.InstallLocation -and
+        ($_.Name -match '(?i)OpenAI|Codex|ChatGPT') -and
+        (Test-Path -LiteralPath (Join-Path $_.InstallLocation 'app\ChatGPT.exe') -PathType Leaf)
+      } | Sort-Object Version -Descending | Select-Object -First 1
+      if ($package) { return $package }
+    } catch {}
+  }
+
+  $package = Get-CodexUsageAppPackageViaWindowsPowerShell
+  if ($package) { return $package }
+
+  $codexCommand = Get-Command codex.exe -ErrorAction SilentlyContinue
+  $codexPath = @($env:CODEX_USAGE_CODEX_PATH, $(if ($codexCommand) { $codexCommand.Source } else { $null })) |
+    Where-Object { $_ -and $_ -match '(?i)[\\/]WindowsApps[\\/]' -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
+    Select-Object -First 1
+  if (-not $codexPath) { return $null }
+  $installLocation = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent ([IO.Path]::GetFullPath($codexPath))))
+  $folderName = Split-Path -Leaf $installLocation
+  $match = [regex]::Match($folderName, '^(?<name>.+)_(?<version>\d+(?:\.\d+){3})_[^_]+__(?<publisher>[^_]+)$')
+  if (-not $match.Success -or -not (Test-Path -LiteralPath (Join-Path $installLocation 'AppxManifest.xml') -PathType Leaf)) { return $null }
+  return [pscustomobject]@{
+    Name = $match.Groups['name'].Value
+    InstallLocation = $installLocation
+    PackageFamilyName = "$($match.Groups['name'].Value)_$($match.Groups['publisher'].Value)"
+    Version = [version]$match.Groups['version'].Value
+  }
+}
+
+
+function Get-CodexUsageNonStoreDesktopCandidates {
+  [CmdletBinding()]
+  param([string[]]$CandidatePaths)
+
+  if ($CandidatePaths) {
+    return @($CandidatePaths | Where-Object { $_ } | Select-Object -Unique)
+  }
+
+  $command = Get-Command ChatGPT.exe -ErrorAction SilentlyContinue
+  $candidates = [Collections.Generic.List[string]]::new()
+  foreach ($candidate in @(
+    $env:CODEX_USAGE_DESKTOP_PATH,
+    $(if ($command) { $command.Source } else { $null }),
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\ChatGPT\ChatGPT.exe' }),
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex\ChatGPT.exe' }),
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\ChatGPT.exe' }),
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'ChatGPT\ChatGPT.exe' }),
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'OpenAI Codex\ChatGPT.exe' }),
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'OpenAI\Codex\ChatGPT.exe' }),
+    $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'ChatGPT\ChatGPT.exe' }),
+    $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'OpenAI Codex\ChatGPT.exe' })
+  ) | Where-Object { $_ }) {
+    try { [void]$candidates.Add([IO.Path]::GetFullPath([string]$candidate)) } catch {}
+  }
+
+  $scanRoots = @(
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs' }),
+    $env:ProgramFiles,
+    ${env:ProgramFiles(x86)}
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique
+  foreach ($root in $scanRoots) {
+    try {
+      Get-ChildItem -LiteralPath $root -Filter 'ChatGPT.exe' -File -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '(?i)[\\/]WindowsApps[\\/]|[\\/]node_modules[\\/]|[\\/]Temp[\\/]' } |
+        ForEach-Object { [void]$candidates.Add($_.FullName) }
+    } catch {}
+  }
+  return @($candidates | Select-Object -Unique)
+}
+
+
+function Resolve-CodexUsageNonStoreDesktopPath {
+  [CmdletBinding()]
+  param([string[]]$CandidatePaths)
+
+  foreach ($candidate in Get-CodexUsageNonStoreDesktopCandidates -CandidatePaths $CandidatePaths) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [IO.Path]::GetFullPath($candidate) }
+  }
+  return $null
+}
+
+
+function Get-CodexUsageState {
+  foreach ($statePath in @($CodexUsageStatePath)) {
+    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { continue }
+    try { return Get-Content -LiteralPath $statePath -Raw -Encoding utf8 | ConvertFrom-Json } catch {}
+  }
+  return $null
+}
+
+# Read logs written by a live child process without hiding the original failure
+# behind a sharing violation, missing file, or a null .Trim() call.
+
+function Read-CodexUsageStartupLog([string]$Path, [int]$MaxCharacters = 4000) {
+  $stream = $null
+  $reader = $null
+  try {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.File]::Exists($Path)) { return '' }
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    if ($stream.Length -gt ($MaxCharacters * 4)) { [void]$stream.Seek(-($MaxCharacters * 4), [IO.SeekOrigin]::End) }
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+    $text = ([string]$reader.ReadToEnd()).Trim()
+    if ($text.Length -gt $MaxCharacters) { $text = $text.Substring($text.Length - $MaxCharacters) }
+    return $text
+  } catch { return '(日志暂时不可读取；请稍后查看日志文件。)' }
+  finally {
+    if ($reader) { $reader.Dispose() }
+    elseif ($stream) { $stream.Dispose() }
+  }
+}
+
+
+function Get-CodexUsageStartupPhase([bool]$ProcessAlive, [bool]$Verified) {
+  if (-not $ProcessAlive) { return 'failed' }
+  if ($Verified) { return 'ready' }
+  return 'waiting-ui'
+}
+
+
+function Get-CodexUsageStartupFailure([int]$ProcessId, $ExitCode, [string]$StderrPath, [string]$StdoutPath) {
+  $detail = Read-CodexUsageStartupLog $StderrPath
+  if ([string]::IsNullOrWhiteSpace($detail)) { $detail = Read-CodexUsageStartupLog $StdoutPath }
+  if ([string]::IsNullOrWhiteSpace($detail)) { $detail = '日志为空，后台未留下进一步错误信息。' }
+  return "监视器后台已退出（PID $ProcessId，退出码 $ExitCode）。$detail 日志：$StderrPath"
+}
+
+
+function Stop-CodexUsagePreviousInjectors($PreviousInjectors, [int]$KeepProcessId, [bool]$Verified) {
+  # Never retire the healthy previous runtime until the replacement itself has
+  # produced a fresh heartbeat. Recheck command-line ownership to avoid PID reuse.
+  if (-not $Verified) { return }
+  if (-not (Get-CodexUsageInjectorById $KeepProcessId)) { return }
+  foreach ($previous in @($PreviousInjectors)) {
+    if ($previous.ProcessId -eq $KeepProcessId) { continue }
+    $live = Get-CodexUsageInjectorById $previous.ProcessId
+    if ($live -and $live.InjectorPath -eq $previous.InjectorPath -and $live.Port -eq $previous.Port) {
+      Stop-Process -Id $live.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+
+function Get-CodexUsageInjectorPathFromCommandLine([string]$CommandLine) {
+  if (-not $CommandLine -or $CommandLine -notmatch '(?i)(?:^|\s)--watch(?:\s|$)') { return $null }
+  $match = [regex]::Match($CommandLine, '(?i)(?:"(?<quoted>[^\"]*[\\/]scripts[\\/]injector\.mjs)"|(?<plain>\S*[\\/]scripts[\\/]injector\.mjs))')
+  if (-not $match.Success) { return $null }
+  $value = if ($match.Groups['quoted'].Success) { $match.Groups['quoted'].Value } else { $match.Groups['plain'].Value }
+  try { return [IO.Path]::GetFullPath($value) } catch { return $null }
+}
+
+
+function Test-CodexUsagePackagePath([string]$InjectorPath) {
+  if (-not $InjectorPath) { return $false }
+  try {
+    $full = [IO.Path]::GetFullPath($InjectorPath)
+    if ([IO.Path]::GetFileName($full) -ine 'injector.mjs') { return $false }
+    $scripts = Split-Path -Parent $full
+    $package = Split-Path -Parent $scripts
+    foreach ($relative in @(
+      'VERSION',
+      'assets\usage-constants.js', 'assets\usage-compact.js', 'assets\usage-placement.js', 'assets\usage-inject.js',
+      'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1'
+    )) {
+      if (-not (Test-Path -LiteralPath (Join-Path $package $relative) -PathType Leaf)) { return $false }
+    }
+    return $true
+  } catch { return $false }
+}
+
+
+function Get-CodexUsageInjectorProcesses {
+  try {
+    foreach ($process in Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction Stop) {
+      $commandLine = [string]$process.CommandLine
+      $injectorPath = Get-CodexUsageInjectorPathFromCommandLine $commandLine
+      if (-not $injectorPath -or -not (Test-CodexUsagePackagePath $injectorPath)) { continue }
+      $port = 0
+      $match = [regex]::Match($commandLine, '(?i)(?:^|\s)--port(?:=|\s+)(\d+)(?:\s|$)')
+      if ($match.Success) { [void][int]::TryParse($match.Groups[1].Value, [ref]$port) }
+      [pscustomobject]@{
+        ProcessId = [int]$process.ProcessId
+        ParentProcessId = [int]$process.ParentProcessId
+        InjectorPath = $injectorPath
+        Port = $port
+        CommandLine = $commandLine
+      }
+    }
+  } catch {}
+}
+
+
+function Get-CodexUsageInjectorById([int]$ProcessId) {
+  if ($ProcessId -le 0) { return $null }
+  return Get-CodexUsageInjectorProcesses | Where-Object { $_.ProcessId -eq $ProcessId } | Select-Object -First 1
+}
+
+
+function Test-CodexUsageReusableInjector($State, $InjectorProcess, [string]$InjectorPath) {
+  if (-not $State -or -not $InjectorProcess -or -not $InjectorPath) { return $false }
+  $statePid = if ($State.PSObject.Properties['injectorPid']) { [int]$State.injectorPid } else { 0 }
+  $statePath = if ($State.PSObject.Properties['injectorPath']) { [string]$State.injectorPath } else { '' }
+  $stateVersion = if ($State.PSObject.Properties['runtimeVersion']) { [string]$State.runtimeVersion } else { '' }
+  return $InjectorProcess.ProcessId -eq $statePid -and
+    $InjectorProcess.InjectorPath -eq $InjectorPath -and
+    $statePath -eq $InjectorPath -and
+    $stateVersion -eq $CodexUsageVersion
+}
+
+
+function Get-CodexUsageTargets([int]$Port) {
+  if ($Port -lt 1024 -or $Port -gt 65535) { return @() }
+  foreach ($hostName in @('127.0.0.1', '[::1]', 'localhost')) {
+    $response = $null
+    $reader = $null
+    try {
+      $request = [Net.HttpWebRequest]::Create("http://${hostName}:$Port/json/list")
+      $request.Proxy = $null
+      $request.Timeout = 1000
+      $response = $request.GetResponse()
+      $reader = [IO.StreamReader]::new($response.GetResponseStream(), $CodexUsageUtf8)
+      return @(($reader.ReadToEnd() | ConvertFrom-Json))
+    } catch {} finally {
+      if ($reader) { $reader.Dispose() }
+      if ($response) { $response.Dispose() }
+    }
+  }
+  return @()
+}
+
+
+function Test-CodexUsageCdpPort([int]$Port) {
+  return [bool](Get-CodexUsageTargets $Port | Where-Object { $_.type -eq 'page' -and [string]$_.url -like 'app://*' })
+}
+
+
+function Wait-CodexUsageCdpPort([int]$Port, [int]$TimeoutSeconds = 180, [int]$PollMilliseconds = 400) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  do {
+    if (Test-CodexUsageCdpPort $Port) { return $true }
+    if ([DateTime]::UtcNow -ge $deadline) { return $false }
+    Start-Sleep -Milliseconds $PollMilliseconds
+  } while ($true)
+}
+
+
+function Get-CodexUsageProcessCdpPorts {
+  $processPorts = [Collections.Generic.List[int]]::new()
+  try {
+    foreach ($process in Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe'" -ErrorAction Stop) {
+      foreach ($match in [regex]::Matches([string]$process.CommandLine, '--remote-debugging-port(?:=|\s+)(\d+)')) {
+        $candidate = 0
+        if ([int]::TryParse($match.Groups[1].Value, [ref]$candidate) -and $candidate -ge 1024 -and $candidate -le 65535 -and -not $processPorts.Contains($candidate)) {
+          $processPorts.Add($candidate)
+        }
+      }
+    }
+  } catch {}
+  return $processPorts.ToArray()
+}
+
+
+function Test-CodexUsageTcpPortAvailable([int]$Port) {
+  if ($Port -lt 1024 -or $Port -gt 65535) { return $false }
+  $listener = $null
+  try {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+    $listener.Server.ExclusiveAddressUse = $true
+    $listener.Start()
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($listener) { try { $listener.Stop() } catch {} }
+  }
+}
+
+
+function Resolve-CodexUsageAvailablePort {
+  [CmdletBinding()]
+  param(
+    [ValidateRange(1024, 65535)][int]$PreferredPort = 9335,
+    [ValidateRange(1, 100)][int]$SearchCount = 20
+  )
+  for ($offset = 0; $offset -lt $SearchCount; $offset++) {
+    $candidate = $PreferredPort + $offset
+    if ($candidate -gt 65535) { break }
+    if (Test-CodexUsageTcpPortAvailable $candidate) { return $candidate }
+  }
+  throw "从端口 $PreferredPort 开始的 $SearchCount 个本机端口均不可用。"
+}
+
+
+function Get-CodexUsageCdpCandidates {
+  [CmdletBinding()]
+  param(
+    [ValidateRange(1024, 65535)][int]$PreferredPort = 9335,
+    [int[]]$ProcessPorts = @(),
+    [int]$ActiveFilePort = 0,
+    [int]$StatePort = 0
+  )
+
+  $candidates = [Collections.Generic.List[int]]::new()
+  foreach ($candidate in @($ProcessPorts) + @($ActiveFilePort, $StatePort, $PreferredPort, 9229, 9335)) {
+    if ($candidate -lt 1024 -or $candidate -gt 65535) { continue }
+    if (-not $candidates.Contains($candidate)) { $candidates.Add($candidate) }
+  }
+  return $candidates.ToArray()
+}
+
+
+function Resolve-CodexUsageCdpPort {
+  [CmdletBinding()]
+  param([ValidateRange(1024, 65535)][int]$PreferredPort = 9335)
+  $processPorts = @(Get-CodexUsageProcessCdpPorts)
+  $activeFilePort = 0
+  $activePortPath = Join-Path $env:APPDATA 'Codex\DevToolsActivePort'
+  if (Test-Path -LiteralPath $activePortPath -PathType Leaf) {
+    [void][int]::TryParse([string](Get-Content -LiteralPath $activePortPath -TotalCount 1), [ref]$activeFilePort)
+  }
+  $state = Get-CodexUsageState
+  $statePort = if ($state -and $state.port) { [int]$state.port } else { 0 }
+  $candidates = Get-CodexUsageCdpCandidates -PreferredPort $PreferredPort -ProcessPorts $processPorts -ActiveFilePort $activeFilePort -StatePort $statePort
+  foreach ($candidate in $candidates) { if (Test-CodexUsageCdpPort $candidate) { return $candidate } }
+  return 0
+}
+
+
+function Start-CodexUsagePackagedCodex {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(1024, 65535)]
+    [int]$Port
+  )
+  $arguments = @(
+    "--remote-debugging-port=$Port",
+    '--remote-debugging-address=127.0.0.1',
+    "--remote-allow-origins=http://127.0.0.1:$Port"
+  )
+  $desktopPath = $null
+  $package = $null
+  if ($env:CODEX_USAGE_DESKTOP_PATH) {
+    $desktopPath = [IO.Path]::GetFullPath($env:CODEX_USAGE_DESKTOP_PATH)
+    if (-not (Test-Path -LiteralPath $desktopPath -PathType Leaf)) { throw "CODEX_USAGE_DESKTOP_PATH 不存在：$desktopPath" }
+  } else {
+    $package = Get-CodexUsageAppPackage
+    if (-not $package) { $desktopPath = Resolve-CodexUsageNonStoreDesktopPath }
+  }
+  if ($desktopPath) {
+    $process = Start-Process -FilePath $desktopPath -ArgumentList $arguments -PassThru
+    return [pscustomobject]@{ ProcessId = $process.Id; Port = $Port; AppUserModelId = $null }
+  }
+  $appUserModelId = $env:CODEX_USAGE_APP_USER_MODEL_ID
+  if (-not $appUserModelId) {
+    if (-not $package) { $package = Get-CodexUsageAppPackage }
+    if (-not $package) { throw '未找到 Codex Store 应用包。可通过 CODEX_USAGE_APP_PACKAGE_NAME 或 CODEX_USAGE_DESKTOP_PATH 指定其他安装。' }
+    $manifestPath = Join-Path $package.InstallLocation 'AppxManifest.xml'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+      $manifest = [xml](Get-Content -LiteralPath $manifestPath -Raw)
+    } else {
+      $manifest = Get-AppxPackageManifest -Package $package
+    }
+    $applications = @($manifest.Package.Applications.Application)
+    $application = $applications | Where-Object { [string]$_.Executable -match '(?i)ChatGPT\.exe$' } | Select-Object -First 1
+    if (-not $application) { $application = $applications | Select-Object -First 1 }
+    if (-not $application -or -not $application.Id) { throw '无法解析 Codex 应用入口。' }
+    $appUserModelId = "$($package.PackageFamilyName)!$($application.Id)"
+  }
+  if (-not ('CodexUsageMonitorActivation.Launcher' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CodexUsageMonitorActivation {
+  [Flags] public enum ActivateOptions { None = 0, DesignMode = 1, NoErrorUI = 2, NoSplashScreen = 4 }
+  [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IApplicationActivationManager {
+    [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, ActivateOptions options, out uint processId);
+  }
+  [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")] public class ApplicationActivationManager {}
+  public static class Launcher {
+    public static uint Activate(string id, string args) {
+      var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+      uint processId;
+      int result = manager.ActivateApplication(id, args, ActivateOptions.NoErrorUI, out processId);
+      Marshal.ThrowExceptionForHR(result);
+      return processId;
+    }
+  }
+}
+'@
+  }
+  $processId = [CodexUsageMonitorActivation.Launcher]::Activate($appUserModelId, ($arguments -join ' '))
+  return [pscustomobject]@{ ProcessId = [int]$processId; Port = $Port; AppUserModelId = $appUserModelId }
+}
+
+
+function Write-CodexUsageState($State) {
+  New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
+  $temporary = "$CodexUsageStatePath.$PID.tmp"
+  try {
+    $State | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporary -Encoding utf8
+    Move-Item -LiteralPath $temporary -Destination $CodexUsageStatePath -Force
+  } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+}
