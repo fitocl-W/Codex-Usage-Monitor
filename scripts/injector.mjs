@@ -187,7 +187,7 @@ async function waitForTargets(port, timeoutMs) {
   throw new Error(`No Codex renderer target on local port ${port} within ${timeoutMs} ms.`);
 }
 
-const assets=['usage-constants.js','usage-fonts.js','usage-placement.js','usage-compact.js','usage-inject.js'];
+const assets=['usage-constants.js','usage-fonts.js','usage-placement.js','usage-compact.js','usage-appearance.js','usage-inject.js'];
 export function settingsUpdateExpression(value){return `(()=>window[${JSON.stringify(STATE_KEY)}]?.updateSettings?.(${JSON.stringify(value)})||false)()`;}
 async function applyMonitor(session,settings){await session.evaluate(`window[${JSON.stringify(PERSISTED_SETTINGS_KEY)}]=${JSON.stringify(settings)}`);const payload=(await Promise.all(assets.map(name=>fs.readFile(path.join(root,'assets',name),'utf8')))).join('\n');return session.evaluate(payload);}
 function optionsFrom(argv){const o={port:9335,mode:'watch',timeoutMs:30000,expectedPid:null};for(let i=0;i<argv.length;i++){const a=argv[i];if(a==='--port')o.port=Number(argv[++i]);else if(a==='--timeout-ms')o.timeoutMs=Number(argv[++i]);else if(a==='--expected-pid')o.expectedPid=Number(argv[++i]);else if(['--once','--verify','--remove','--watch'].includes(a))o.mode=a.slice(2);else if(a!=='--monitor-only')throw Error('Unknown argument: '+a);}if(!Number.isInteger(o.port)||o.port<1024||o.port>65535)throw Error('Invalid CDP port');if(!Number.isInteger(o.timeoutMs)||o.timeoutMs<250||o.timeoutMs>120000)throw Error('Invalid timeout');return o;}

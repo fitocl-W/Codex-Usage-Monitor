@@ -1,10 +1,12 @@
-# Codex Usage Monitor 1.0
+# Codex Usage Monitor 1.2
 
-在 Codex 客户端中显示上下文占用和 Token 用量，支持五套主题。
+在 Codex 客户端中显示上下文占用和 Token 用量，支持十套配色与四种布局，共 40 种组合。
 
 ## 效果预览
 
-![五套主题效果预览](assets/github-preview.png)
+![原有五套主题效果预览](assets/github-preview.png)
+
+![新增五套主题效果预览](assets/new-themes-preview.png)
 
 
 
@@ -22,7 +24,7 @@ winget install --id Microsoft.PowerShell --source winget
 
 ## 2. 安装 Monitor
 
-完整解压安装包，打开 `codex-usage-monitor-windows-1.0.0` 文件夹，在文件夹空白处右键，选择“在终端中打开”。确认当前路径下能看到 `install.ps1`，执行：
+完整解压安装包，打开 `codex-usage-monitor-windows-1.2` 文件夹，在文件夹空白处右键，选择“在终端中打开”。确认当前路径下能看到 `install.ps1`，执行：
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -35,6 +37,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 1. 保存正在进行的工作，彻底退出 Codex，关闭所有 Codex 窗口；如果托盘里仍有 Codex，请选择“退出”。
 2. 双击桌面新生成的 **Codex Usage Monitor** 图标，打开 Codex。
 3. 鼠标悬浮在模型名称左侧的圆环和百分比上，即可查看统计面板；移开后收起。
-4. 点击面板右下角的实心圆，切换主题。
+4. 点击面板右下角的实心圆，打开外观菜单。配色与布局可独立选择；悬浮即时预览，点击应用并自动保存，菜单保持打开。移出菜单恢复已确认组合，按 Esc 收起菜单。
 
 以后需要显示统计面板时，请使用 **Codex Usage Monitor** 图标启动 Codex。
+
+主题顺序：简洁白色 → 暖橙磨砂 → 橄榄荧光 → 纸上粉彩 → 山野晨光 → 石墨仪表 → 雾绿透光 → 白岩留白 → 青叶生长 → 暮色琥珀。点击面板右下角圆点打开菜单，配色与布局分别保存并同步到其他窗口。
+
+## 配色与布局组合
+
+![组合菜单预览](assets/combinations-preview.png)
+
+布局包括默认布局、终端观测、蓝图刻度和赤陶刊页。切换布局保留配色，切换配色保留布局；旧设置会保留主题并采用默认布局。
+
+缺失用量数据时显示 0，日志报告新的数据后自动更新。入口使用固定百分比字形定位，圆环可见轮廓底端与百分比文字底端对齐。

@@ -24,5 +24,10 @@
   "scripts/start-monitor.ps1",
   "scripts/ui-settings.mjs",
   "scripts/usage-client.mjs",
-  "scripts/usage/scheduling.mjs"
+  "scripts/usage/scheduling.mjs",
+  "README.md",
+  "assets/github-preview.png",
+  "assets/new-themes-preview.png",
+  "assets/usage-appearance.js",
+  "assets/combinations-preview.png"
 ]

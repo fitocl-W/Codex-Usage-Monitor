@@ -29,11 +29,12 @@
   const isUnsentNewSession = (host) => {
     if (host.__compactMessageSent) return false;
     const active = node => !node.closest('[inert],[aria-hidden="true"],[data-app-shell-active-page="false"]');
-    const markers=[...document.querySelectorAll('[data-above-composer-conversation-id],[data-conversation-id],[data-thread-id]')].filter(active);
-    if(markers.some(node=>['data-above-composer-conversation-id','data-conversation-id','data-thread-id']
-      .some(attribute=>/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|chatgpt:/i.test(node.getAttribute(attribute)||''))))return false;
-    // Positive new-chat UI evidence is required. A missing thread ID alone
-    // also occurs while loading an existing conversation.
+    const details=window[registry.constants.STATE_KEY]?.usage?.tokenDetails;
+    if(details&&['inputTokens','cachedInputTokens','uncachedInputTokens','outputTokens','contextTokens'].some(key=>valid(details[key])&&details[key]>0))return false;
+    // A thread ID can be allocated before the first message. Use actual
+    // message/usage evidence rather than rejecting every allocated ID.
+    const messages=[...document.querySelectorAll('[data-message-id],[data-turn-id],[data-message-author-role],[data-testid="user-message"],[data-testid="assistant-message"]')];
+    if(messages.some(node=>active(node)&&(node.textContent||'').trim()))return false;
     return [...document.querySelectorAll('button,[role="button"]')].some(node=>{
       const r=node.getBoundingClientRect();
       return active(node)&&r.width>0&&r.height>0&&/选择项目|select project|choose project/i.test(text(node));
@@ -48,13 +49,13 @@
         || /\b(?:GPT[-\s]?\d|o[134](?:\b|[-\s])|codex[-\s]|claude[-\s]|gemini[-\s]|deepseek[-\s])/i.test(label);
     }).sort((a,b)=>b.getBoundingClientRect().top-a.getBoundingClientRect().top)[0] || null;
   let fontMeasureContext;
-  const visibleTextCenter = (node, rect, bottom = false) => {
+  const visibleTextCenter = (node, rect, bottom = false, reference = null) => {
     if (typeof window.CanvasRenderingContext2D === 'function') {
       try {
         fontMeasureContext ||= document.createElement('canvas').getContext('2d');
         const style=getComputedStyle(node.parentElement);
         fontMeasureContext.font=style.font || `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-        const metrics=fontMeasureContext.measureText(node.textContent.trim());
+        const metrics=fontMeasureContext.measureText(reference??node.textContent.trim());
         const fontHeight=metrics.fontBoundingBoxAscent+metrics.fontBoundingBoxDescent;
         if(fontHeight>0 && Number.isFinite(metrics.actualBoundingBoxAscent) && Number.isFinite(metrics.actualBoundingBoxDescent)) {
           const baseline=rect.top+metrics.fontBoundingBoxAscent*rect.height/fontHeight;
@@ -99,7 +100,9 @@
     :host([data-layout="compact"]) { width:66px!important; min-width:66px!important; max-width:66px!important; justify-content:flex-end; z-index:1000; }
     :host([data-layout="compact"]) .usage-summary { width:max-content!important;max-width:100%;box-sizing:border-box;display:flex!important;align-items:center;justify-content:center; }
     :host([data-layout="compact"]) .usage-summary { padding:1.2px 2.4px!important; height:18.4px!important; min-height:0!important; border:0!important; border-radius:4px!important; background:transparent!important; font:500 12px/16px system-ui!important; white-space:nowrap; box-shadow:none!important; cursor:pointer; }
-    :host([data-layout="compact"]) .usage-summary:hover { background:color-mix(in srgb,currentColor 6%,transparent)!important; }
+    :host([data-layout="compact"]) .usage-summary:hover { background:transparent!important; }
+    .compact-summary-content { position:relative;display:inline-flex;align-items:center;isolation:isolate; }
+    :host([data-layout="compact"]) .usage-summary:hover .compact-summary-content::before { content:"";position:absolute;inset:-1px -2px;border-radius:3px;background:color-mix(in srgb,currentColor 6%,transparent);pointer-events:none;z-index:-1; }
     .compact-context-ring { width:16px;height:16px;flex:none;transform:rotate(-90deg); }
     :host([data-theme="glass"]) .compact-context-ring { color:#b1846c; }
     :host([data-theme="glass"]) .compact-ring-value { stroke-opacity:1; }
@@ -166,9 +169,56 @@
     .compact-value { height:24px;line-height:24px!important; }
     .compact-footer { height:28px;margin:0; }
     .compact-note { line-height:12px; }
+
+    /* Additional themes share the existing fixed panel geometry. */
+    :host([data-theme="graphite"]) { --compact-note:var(--compact-muted);--compact-bg:#fff;--compact-ink:#232527;--compact-muted:#84888b;--compact-heading:#4c5053;--compact-border:#dadddf;--compact-divider:#e8eaeb;--compact-track:#e4e6e7;--compact-fill:repeating-linear-gradient(125deg,#343638 0 2px,#54575a 2px 3px);--compact-dot:#373a3c;--compact-entry:#555b5f;--compact-shadow:0 2px 4px #14181905;--compact-font:"MonitorBarlow"; }
+    :host([data-theme="graphite"][data-layout="compact"]) .usage-popover { border-radius:9px!important; }
+    :host([data-theme="graphite"]) .compact-ring-value { stroke-opacity:1; }
+    :host([data-theme="graphite"]) .compact-grid>div { box-sizing:border-box;padding:3px 5px;grid-template-rows:14px 20px;row-gap:1px; }
+    :host([data-theme="graphite"]) .compact-grid .compact-muted { height:14px;line-height:14px;font-size:10px; }
+    :host([data-theme="graphite"]) .compact-value { height:20px;line-height:20px!important;font-size:12px;letter-spacing:-.2px; }
+    :host([data-theme="mist"]) { --compact-note:var(--compact-muted);--compact-bg:#f7faf8b8;--compact-ink:#344a3f;--compact-muted:#809286;--compact-heading:#53735f;--compact-border:#ffffffb8;--compact-divider:#a7b6ab40;--compact-track:#d3ded6;--compact-fill:linear-gradient(90deg,#768e79,#afbfab);--compact-dot:#859b82;--compact-entry:#64816e;--compact-shadow:0 9px 24px #4e675912,inset 0 1px 0 #fff;--compact-light:radial-gradient(ellipse at 0% 0%,#ffffffc0,transparent 65%),radial-gradient(ellipse at 95% 35%,#b0bea24a,transparent 70%); }
+    :host([data-theme="mist"][data-layout="compact"]) .usage-popover { border-radius:22px!important; }
+    :host([data-theme="mist"]) .compact-ring-value { stroke-opacity:1; }
+    :host([data-theme="mist"]) .compact-grid>div { box-sizing:border-box;padding:3px 5px;grid-template-rows:14px 20px;row-gap:1px; }
+    :host([data-theme="mist"]) .compact-grid .compact-muted { height:14px;line-height:14px;font-size:10px; }
+    :host([data-theme="mist"]) .compact-value { height:20px;line-height:20px!important;font-size:12px;letter-spacing:-.2px; }
+    :host([data-theme="chalk"]) { --compact-note:var(--compact-muted);--compact-bg:#faf9f6;--compact-ink:#2c2e2a;--compact-muted:#94958a;--compact-heading:#55594e;--compact-border:#dddfd6;--compact-divider:#e6e5de;--compact-track:#e4e5df;--compact-fill:#3d4038;--compact-dot:#808276;--compact-entry:#73786b;--compact-shadow:0 2px 3px #55594005;--compact-light:linear-gradient(135deg,#ffffff80,transparent); }
+    :host([data-theme="chalk"][data-layout="compact"]) .usage-popover { border-radius:24px!important; }
+    :host([data-theme="chalk"]) .compact-ring-value { stroke-opacity:1; }
+    :host([data-theme="chalk"]) .compact-grid>div { box-sizing:border-box;padding:3px 5px;grid-template-rows:14px 20px;row-gap:1px; }
+    :host([data-theme="chalk"]) .compact-grid .compact-muted { height:14px;line-height:14px;font-size:10px; }
+    :host([data-theme="chalk"]) .compact-value { height:20px;line-height:20px!important;font-size:12px;letter-spacing:-.2px; }
+    :host([data-theme="botanic"]) { --compact-note:var(--compact-muted);--compact-bg:#f7fcf3;--compact-ink:#164d3b;--compact-muted:#73917f;--compact-heading:#2e6953;--compact-border:#fffffff0;--compact-divider:#b2ceba77;--compact-track:#d2e5cb;--compact-fill:linear-gradient(90deg,#175747,#92b64e);--compact-dot:#3d7d58;--compact-entry:#277154;--compact-shadow:0 8px 20px #16583b12,inset 0 1px 0 #fff;--compact-light:radial-gradient(ellipse at 100% 0%,#b7dc7660,transparent 65%),radial-gradient(ellipse at 0% 100%,#b3dac86b,transparent 68%);--compact-font:"MonitorBarlow"; }
+    :host([data-theme="botanic"][data-layout="compact"]) .usage-popover { border-radius:18px!important; }
+    :host([data-theme="botanic"]) .compact-ring-value { stroke-opacity:1; }
+    :host([data-theme="botanic"]) .compact-grid>div { box-sizing:border-box;padding:3px 5px;grid-template-rows:14px 20px;row-gap:1px; }
+    :host([data-theme="botanic"]) .compact-grid .compact-muted { height:14px;line-height:14px;font-size:10px; }
+    :host([data-theme="botanic"]) .compact-value { height:20px;line-height:20px!important;font-size:12px;letter-spacing:-.2px; }
+    :host([data-theme="smoke"]) { --compact-note:var(--compact-muted);--compact-bg:#5b5353bb;--compact-ink:#f5f3ef;--compact-muted:#c3bdba;--compact-heading:#e5dfda;--compact-border:#e7ddd744;--compact-divider:#dfd4c329;--compact-track:#d1c9c229;--compact-fill:linear-gradient(90deg,#e3d0b4,#f0ede3);--compact-dot:#e4ba88;--compact-entry:#94744f;--compact-shadow:0 8px 22px #211c2222,inset 0 1px 0 #fff2;--compact-light:radial-gradient(ellipse at 85% 0%,#c19c7660,transparent 60%),radial-gradient(ellipse at 0% 95%,#343e43a0,transparent 70%); }
+    :host([data-theme="smoke"][data-layout="compact"]) .usage-popover { border-radius:22px!important; }
+    :host([data-theme="smoke"]) .compact-ring-value { stroke-opacity:1; }
+    :host([data-theme="smoke"]) .compact-grid>div { box-sizing:border-box;padding:3px 5px;grid-template-rows:14px 20px;row-gap:1px; }
+    :host([data-theme="smoke"]) .compact-grid .compact-muted { height:14px;line-height:14px;font-size:10px; }
+    :host([data-theme="smoke"]) .compact-value { height:20px;line-height:20px!important;font-size:12px;letter-spacing:-.2px; }
+
+    :host([data-theme="graphite"]) .compact-grid>div { border:1px solid #e9ebec;border-radius:5px;background:linear-gradient(#fafbfb,#fff); }
+    :host([data-theme="graphite"]) .compact-value { font-size:14px;font-weight:600; }
+    :host([data-theme="graphite"]) .compact-track { border-radius:2px; }
+    :host([data-theme="mist"]) .usage-popover { backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px); }
+    :host([data-theme="mist"]) .compact-grid>div { border:1px solid #ffffffb0;border-radius:12px;background:#ffffff59;box-shadow:inset 0 1px 0 #fff8; }
+    :host([data-theme="chalk"]) .compact-grid>div { background:#f0efea;border:1px solid #e8e7df;border-radius:15px; }
+    :host([data-theme="chalk"]) .compact-value { font-family:"MonitorLora","MonitorSans",serif;font-size:11px; }
+    :host([data-theme="chalk"]) [data-context-count] { font-family:"MonitorLora","MonitorSans",serif; }
+    :host([data-theme="botanic"]) .compact-grid>div { background:#ffffff80;border:1px solid #ffffffc0;border-radius:10px; }
+    :host([data-theme="botanic"]) .compact-value { font-size:14px;font-weight:500; }
+    :host([data-theme="botanic"]) [data-value="0"] { color:#47883d; }
+    :host([data-theme="smoke"]) .usage-popover { backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px); }
+    :host([data-theme="smoke"]) .compact-grid>div { background:#26272b30;border:1px solid #fff1;border-radius:12px; }
+    :host([data-theme="smoke"]) .compact-track { box-shadow:inset 0 1px 2px #19181c22; }
   `;
-  const number = n => valid(n) ? n.toLocaleString('en-US') + ' tok' : '--';
-  const short = n => valid(n) ? n >= 1e6 ? (n/1e6).toFixed(n%1e6 ? 2 : 0)+'M' : n >= 1000 ? Math.round(n/1000)+'K' : String(n) : '--';
+  const number = n => valid(n) ? n.toLocaleString('en-US') + ' tok' : '0 tok';
+  const short = n => valid(n) ? n >= 1e6 ? (n/1e6).toFixed(n%1e6 ? 2 : 0)+'M' : n >= 1000 ? Math.round(n/1000)+'K' : String(n) : '0';
   const render = (host, usage = {}) => {
     const root = host.shadowRoot;
     host.dataset.layout = 'compact';
@@ -190,7 +240,7 @@
       footer.append(toggle);content.append(footer);
       const bridge=document.createElement('div');bridge.className='compact-hover-bridge';bridge.setAttribute('aria-hidden','true');root.append(bridge);
     }
-    const current=window[registry.constants.STATE_KEY]?.getSettings?.().theme;
+    const current=window[registry.constants.STATE_KEY]?.getDisplaySettings?.().theme??window[registry.constants.STATE_KEY]?.getSettings?.().theme;
     const theme=registry.constants.THEMES.includes(current)?current:'white';
     if(host.dataset.theme!==theme)host.dataset.theme=theme;
     const toggle=root.querySelector('.compact-theme-toggle');
@@ -199,10 +249,10 @@
     const emptySession=isUnsentNewSession(host);
     const d=emptySession ? {inputTokens:0,cachedInputTokens:0,uncachedInputTokens:0,outputTokens:0,contextTokens:0,contextWindow:0} : usage.tokenDetails || {};
     const rate=valid(d.inputTokens) && valid(d.cachedInputTokens) && d.inputTokens>0 && d.cachedInputTokens<=d.inputTokens ? 100*d.cachedInputTokens/d.inputTokens : null;
-    const hit=emptySession?'0%':rate===null?'--':rate.toFixed(1)+'%';
+    const hit=emptySession?'0%':rate===null?'0%':rate.toFixed(1)+'%';
     const summary=root.querySelector('.usage-summary');
     if (!summary.querySelector('.compact-context-ring')) {
-      summary.innerHTML='<svg class="compact-context-ring" viewBox="0 0 20 20" aria-hidden="true"><circle class="compact-ring-track" cx="10" cy="10" r="7"/><circle class="compact-ring-value" cx="10" cy="10" r="7" pathLength="100"/></svg><span class="compact-summary-value"></span>';
+      summary.innerHTML='<span class="compact-summary-content"><svg class="compact-context-ring" viewBox="0 0 20 20" aria-hidden="true"><circle class="compact-ring-track" cx="10" cy="10" r="7"/><circle class="compact-ring-value" cx="10" cy="10" r="7" pathLength="100"/></svg><span class="compact-summary-value"></span></span>';
     }
     summary.removeAttribute('title');
     const vals=[hit,number(d.uncachedInputTokens),number(d.cachedInputTokens),number(d.outputTokens)];
@@ -221,13 +271,13 @@
     const usedRate=usedMatch ? Number(usedMatch[1]) : remainingMatch ? 100-Number(remainingMatch[1]) : reportedRate;
     const nativeRate=usedRate!==null && usedRate>=0 && usedRate<=100 ? usedRate : null;
     const estimate=valid(d.contextTokens)&&valid(d.contextWindow)&&d.contextWindow>0 ? 100*d.contextTokens/d.contextWindow : null;
-    const percent=emptySession ? 0 : nativeRate ?? estimate;
-    const contextHit=percent===null?'--':Math.round(percent)+'%';
+    const percent=emptySession ? 0 : nativeRate ?? estimate ?? 0;
+    const contextHit=Math.round(percent)+'%';
     setText(summary.querySelector('.compact-summary-value'),contextHit);
     summary.querySelector('.compact-ring-value').setAttribute('stroke-dasharray',Math.max(0,Math.min(100,percent ?? 0))+' 100');
     summary.setAttribute('aria-label',(emptySession||nativeRate!==null?'上下文已用 ':'上下文占用估算 ')+contextHit+'，查看 Token 用量');
     setText(root.querySelector('[data-context-label]'),emptySession||nativeRate!==null?'上下文已用':'上下文估算');
-    setText(root.querySelector('[data-context-percent]'),percent===null?'--':Math.round(percent)+'%');
+    setText(root.querySelector('[data-context-percent]'),Math.round(percent)+'%');
     setText(root.querySelector('[data-context-count]'),emptySession?'0 / 0':'~'+short(d.contextTokens)+' / '+short(d.contextWindow));
     root.querySelector('.compact-fill').style.width=Math.max(0,Math.min(100,percent ?? 0))+'%';
     const track=root.querySelector('.compact-track');
@@ -238,7 +288,7 @@
   const configurePosition = (host, composer) => {
     const control=findContextControl(composer);host.__compactContext=control;
     if(control)hideNative(control);else restoreNative();
-    const model=findModelControl(composer);
+    const model=findModelControl(composer);host.__compactModel=model;
     if(!model){host.hidden=true;return {ok:false,reason:'model-control-not-found',anchor:'none',availableWidth:0};}
     const r=model.getBoundingClientRect();
     const width=66;
@@ -256,6 +306,7 @@
     // transformed containing block. CSS top and viewport top can differ.
     const hostRect=host.getBoundingClientRect();
     const ring=host.shadowRoot.querySelector('.compact-context-ring');
+    ring.style.transform='rotate(-90deg)';
     const ringRect=ring.getBoundingClientRect();
     if(!host.hidden && ringRect.height>0 && hostRect.height>0) {
       const scale=ringRect.height/16;
@@ -267,16 +318,32 @@
       const valueRect=range.getBoundingClientRect?.();
       if(valueRect?.height>0 && value.firstChild) {
         const currentRing=ring.getBoundingClientRect();
-        const shift=(currentRing.top+currentRing.height/2-visibleTextCenter(value.firstChild,valueRect))/scale;
+        const shift=(currentRing.top+currentRing.height/2-visibleTextCenter(value.firstChild,valueRect,false,'00%'))/scale;
         value.style.transform=`translateY(${shift}px)`;
         // Move the whole entry after centering its contents, so the ring
         // accompanies the percentage while the two text bottoms line up.
         const bottomRect=range.getBoundingClientRect();
-        const bottomDelta=modelTextCenter(model,true)-visibleTextCenter(value.firstChild,bottomRect,true);
+        const bottomDelta=modelTextCenter(model,true)-visibleTextCenter(value.firstChild,bottomRect,true,'00%');
         const currentTop=Number.parseFloat(host.style.getPropertyValue('--usage-top'));
         // Small optical offset requested for the ring and percentage together.
         host.style.setProperty('--usage-top',(currentTop+(bottomDelta+2)/scale)+'px');
       }
+    }
+    // Align the painted stroke edge, not the SVG box, to the current text ink.
+    // The entry/reference alignment above stays unchanged.
+    ring.style.transform='rotate(-90deg)';
+    const numberNode=host.shadowRoot.querySelector('.compact-summary-value');
+    const numberRange=document.createRange();numberRange.selectNodeContents(numberNode);
+    const numberRect=numberRange.getBoundingClientRect?.();
+    const paintedRing=ring.getBoundingClientRect();
+    if(!host.hidden&&numberRect?.height>0&&numberNode.firstChild&&paintedRing.height>0){
+      const track=ring.querySelector('.compact-ring-track');
+      const viewBox=(ring.getAttribute('viewBox')||'0 0 20 20').split(/[ ,]+/).map(Number);
+      const stroke=Number.parseFloat(getComputedStyle(track).strokeWidth)||2.5;
+      const paintedBottom=paintedRing.top+(Number(track.getAttribute('cy'))+Number(track.getAttribute('r'))+stroke/2-viewBox[1])*paintedRing.height/viewBox[3];
+      const numberBottom=visibleTextCenter(numberNode.firstChild,numberRect,true);
+      const offset=(numberBottom-paintedBottom)/(paintedRing.height/16);
+      ring.style.transform=`translateY(${offset}px) rotate(-90deg)`;
     }
     const measuredSummaryWidth=host.shadowRoot.querySelector('.usage-summary').getBoundingClientRect().width;
     const summaryWidth=measuredSummaryWidth>0 && measuredSummaryWidth<=width ? measuredSummaryWidth : width;

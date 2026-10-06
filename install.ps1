@@ -15,7 +15,7 @@ $monitorUtils = Join-Path $sourceRoot 'scripts\monitor-utils.ps1'
 if (-not (Test-Path -LiteralPath $monitorUtils -PathType Leaf)) { throw "Monitor utilities not found: $monitorUtils" }
 . $monitorUtils
 $version = (Get-Content -LiteralPath (Join-Path $sourceRoot 'VERSION') -Raw).Trim()
-if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid VERSION: $version" }
+if ($version -notmatch '^\d+\.\d+(?:\.\d+)?$') { throw "Invalid VERSION: $version" }
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Package manifest not found: $manifestPath" }
 
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
