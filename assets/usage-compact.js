@@ -102,7 +102,7 @@
     :host([data-layout="compact"]) .usage-summary { padding:1.2px 2.4px!important; height:18.4px!important; min-height:0!important; border:0!important; border-radius:4px!important; background:transparent!important; font:500 12px/16px system-ui!important; white-space:nowrap; box-shadow:none!important; cursor:pointer; }
     :host([data-layout="compact"]) .usage-summary:hover { background:transparent!important; }
     .compact-summary-content { position:relative;display:inline-flex;align-items:center;isolation:isolate; }
-    :host([data-layout="compact"]) .usage-summary:hover .compact-summary-content::before { content:"";position:absolute;inset:-1px -2px;border-radius:3px;background:color-mix(in srgb,currentColor 6%,transparent);pointer-events:none;z-index:-1; }
+    :host([data-layout="compact"]) .usage-summary:is(:hover,:focus-visible,[aria-expanded="true"]) .compact-summary-content::before { content:"";position:absolute;inset:-4px -7px;border-radius:999px;background:color-mix(in srgb,currentColor 8%,transparent);pointer-events:none;z-index:-1; }
     .compact-context-ring { width:16px;height:16px;flex:none;transform:rotate(-90deg); }
     :host([data-theme="glass"]) .compact-context-ring { color:#b1846c; }
     :host([data-theme="glass"]) .compact-ring-value { stroke-opacity:1; }

@@ -1,4 +1,4 @@
-# Codex Usage Monitor 1.2
+# Codex Usage Monitor 1.3
 
 在 Codex 客户端中显示上下文占用和 Token 用量，支持十套配色与四种布局，共 40 种组合。
 
@@ -24,7 +24,7 @@ winget install --id Microsoft.PowerShell --source winget
 
 ## 2. 安装 Monitor
 
-完整解压安装包，打开 `codex-usage-monitor-windows-1.2` 文件夹，在文件夹空白处右键，选择“在终端中打开”。确认当前路径下能看到 `install.ps1`，执行：
+完整解压安装包，打开 `codex-usage-monitor-windows-1.3` 文件夹，在文件夹空白处右键，选择“在终端中打开”。确认当前路径下能看到 `install.ps1`，执行：
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -36,7 +36,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 1. 保存正在进行的工作，彻底退出 Codex，关闭所有 Codex 窗口；如果托盘里仍有 Codex，请选择“退出”。
 2. 双击桌面新生成的 **Codex Usage Monitor** 图标，打开 Codex。
-3. 鼠标悬浮在模型名称左侧的圆环和百分比上，即可查看统计面板；移开后收起。
+3. 点击模型名称左侧的圆环和百分比，即可打开统计面板；鼠标移出后保持打开。再次点击入口、点击面板外部或按 Esc 关闭。
 4. 点击面板右下角的实心圆，打开外观菜单。配色与布局可独立选择；悬浮即时预览，点击应用并自动保存，菜单保持打开。移出菜单恢复已确认组合，按 Esc 收起菜单。
 
 以后需要显示统计面板时，请使用 **Codex Usage Monitor** 图标启动 Codex。
